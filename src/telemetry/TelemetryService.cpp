@@ -15,6 +15,9 @@ void TelemetryService::setPublisher(PublishCallback publisher) {
     _publisher = publisher;
 }
 
+// =====================================================
+// BOOT
+// =====================================================
 bool TelemetryService::publishBoot() {
     JsonDocument doc;
 
@@ -29,6 +32,9 @@ bool TelemetryService::publishBoot() {
     return publishJson(machineIdentity.topicStatus().c_str(), doc);
 }
 
+// =====================================================
+// HEARTBEAT
+// =====================================================
 bool TelemetryService::publishHeartbeat(AppConfig::SystemState state) {
     JsonDocument doc;
 
@@ -45,9 +51,10 @@ bool TelemetryService::publishHeartbeat(AppConfig::SystemState state) {
     return publishJson(machineIdentity.topicTelemetry().c_str(), doc);
 }
 
-bool TelemetryService::publishMachineAvailabilityStatus(
-    bool machineCanAcceptPayment
-) {
+// =====================================================
+// DISPONIBILITÉ MACHINE
+// =====================================================
+bool TelemetryService::publishMachineAvailabilityStatus(bool machineCanAcceptPayment) {
     JsonDocument doc;
 
     doc["type"] = "machine_status";
@@ -69,10 +76,10 @@ bool TelemetryService::publishMachineAvailabilityStatus(
     return publishJson(machineIdentity.topicStatus().c_str(), doc);
 }
 
-bool TelemetryService::publishSystemEvent(
-    const char* eventType,
-    const char* message
-) {
+// =====================================================
+// ÉVÉNEMENT SYSTÈME
+// =====================================================
+bool TelemetryService::publishSystemEvent(const char* eventType, const char* message) {
     JsonDocument doc;
 
     doc["type"] = "system_event";
@@ -84,12 +91,16 @@ bool TelemetryService::publishSystemEvent(
     return publishJson(machineIdentity.topicEvents().c_str(), doc);
 }
 
+// =====================================================
+// TRANSACTION (avec paymentMethod)
+// =====================================================
 bool TelemetryService::publishTransactionEvent(
     const char* eventType,
     const char* transactionId,
     uint16_t amountFcfa,
     const char* source,
-    const char* status
+    const char* status,
+    const char* paymentMethod
 ) {
     JsonDocument doc;
 
@@ -103,15 +114,81 @@ bool TelemetryService::publishTransactionEvent(
     doc["amountFcfa"] = amountFcfa;
     doc["source"] = source;
     doc["status"] = status;
+    doc["paymentMethod"] = paymentMethod;   // ✅ coin / wave / orange_money
     doc["uptimeMs"] = millis();
 
     return publishJson(machineIdentity.topicEvents().c_str(), doc);
 }
 
-bool TelemetryService::publishError(
-    const char* errorCode,
-    const char* message
+// =====================================================
+// PAIEMENT DÉDIÉ (pour dashboard Grafana)
+// =====================================================
+bool TelemetryService::publishPaymentEvent(
+    const char* paymentMethod,
+    uint16_t amountFcfa,
+    const char* transactionId,
+    const char* status,
+    const char* source
 ) {
+    JsonDocument doc;
+
+    doc["type"] = "payment";
+    doc["eventType"] = "payment";
+    doc["machineId"] = machineIdentity.getId();
+    doc["machineCode"] = machineIdentity.getId();
+    doc["paymentMethod"] = paymentMethod;   // coin / wave / orange_money
+    doc["amount"] = amountFcfa;
+    doc["amountFcfa"] = amountFcfa;
+    doc["transactionId"] = transactionId;
+    doc["status"] = status;
+    doc["source"] = source;
+    doc["uptimeMs"] = millis();
+
+    return publishJson(machineIdentity.topicEvents().c_str(), doc);
+}
+
+// =====================================================
+// COIN PHYSIQUE
+// =====================================================
+bool TelemetryService::publishCoinPaymentEvent(
+    uint16_t amountFcfa,
+    uint16_t pulseCount,
+    const char* source,
+    const char* eventId
+) {
+    JsonDocument doc;
+
+    doc["type"] = "coin_payment_detected";
+    doc["eventType"] = "physical_coin_payment";
+    doc["machineId"] = machineIdentity.getId();
+    doc["machineCode"] = machineIdentity.getId();
+    doc["amountFcfa"] = amountFcfa;
+    doc["amount"] = amountFcfa;
+    doc["pulseCount"] = pulseCount;
+    doc["paymentMethod"] = "coin";        // ✅ Toujours coin
+    doc["source"] = (source != nullptr && strlen(source) > 0) ? source : "physical_coin";
+    doc["status"] = "DETECTED";
+    doc["uptimeMs"] = millis();
+
+    bool published = publishJson(machineIdentity.topicEvents().c_str(), doc);
+
+    // ✅ 2) AJOUT : publication d'un événement "payment" standardisé
+    //    pour que le dashboard Business capture aussi le COIN
+    publishPaymentEvent(
+        "coin",
+        amountFcfa,
+        (eventId != nullptr ? eventId : ""),
+        "SUCCESS",                 // ✅ On force SUCCESS pour le dashboard
+        (source != nullptr ? source : "physical_coin")
+    );
+
+    return published;
+}
+
+// =====================================================
+// ERREURS
+// =====================================================
+bool TelemetryService::publishError(const char* errorCode, const char* message) {
     JsonDocument doc;
 
     doc["type"] = "error";
@@ -123,14 +200,13 @@ bool TelemetryService::publishError(
     return publishJson(machineIdentity.topicEvents().c_str(), doc);
 }
 
-bool TelemetryService::publishJson(
-    const char* topic,
-    JsonDocument& doc
-) {
+// =====================================================
+// PUBLISH JSON (commun)
+// =====================================================
+bool TelemetryService::publishJson(const char* topic, JsonDocument& doc) {
     doc["macAddress"] = WiFi.macAddress();
 
     char payload[AppConfig::Limits::TELEMETRY_JSON_SIZE];
-
     const size_t length = serializeJson(doc, payload, sizeof(payload));
 
     if (length == 0) {
@@ -145,10 +221,7 @@ bool TelemetryService::publishJson(
 
     if (_publisher != nullptr) {
         const bool published = _publisher(topic, payload);
-
-        if (published) {
-            return true;
-        }
+        if (published) return true;
 
         Serial.println("[TelemetryService][WARN] Publication MQTT refusée.");
         return false;
@@ -164,34 +237,10 @@ bool TelemetryService::publishJson(
     return true;
 }
 
-bool TelemetryService::publishCoinPaymentEvent(
-    uint16_t amountFcfa,
-    uint16_t pulseCount,
-    const char* source,
-    const char* eventId
-) {
-    JsonDocument doc;
-
-    doc["type"] = "coin_payment_detected";
-    doc["eventType"] = "physical_coin_payment";
-    doc["machineId"] = machineIdentity.getId();
-    doc["amountFcfa"] = amountFcfa;
-    doc["pulseCount"] = pulseCount;
-    doc["source"] = (source != nullptr && strlen(source) > 0) ? source : "physical_coin";
-    doc["status"] = "DETECTED";
-    doc["uptimeMs"] = millis();
-
-    if (eventId != nullptr) {
-        doc["eventId"] = eventId;
-        doc["transactionId"] = eventId;
-    }
-
-    return publishJson(machineIdentity.topicEvents().c_str(), doc);
-}
-
-const char* TelemetryService::systemStateToString(
-    AppConfig::SystemState state
-) const {
+// =====================================================
+// ETAT SYSTÈME -> STRING
+// =====================================================
+const char* TelemetryService::systemStateToString(AppConfig::SystemState state) const {
     switch (state) {
         case AppConfig::SystemState::BOOT:              return "BOOT";
         case AppConfig::SystemState::WIFI_CONNECTING:   return "WIFI_CONNECTING";

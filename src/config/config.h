@@ -15,7 +15,7 @@ namespace AppConfig {
        ⚠️ L'ID machine est maintenant dynamique (voir MachineIdentity.h)
     */
     namespace Machine {
-        static constexpr const char* FIRMWARE_VERSION = "0.0.2";
+        static constexpr const char* FIRMWARE_VERSION = "0.0.4";
 
         const String OTA_VERSION_URL =
             "https://raw.githubusercontent.com/Buhaha2525/OTA_bin/main/version.txt";

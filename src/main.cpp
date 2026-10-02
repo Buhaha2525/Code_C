@@ -13,10 +13,18 @@
 #include "transaction/TransactionManager.h"
 #include "transaction/TransactionStore.h"
 #include "telemetry/TelemetryService.h"
+#include "telemetry/LogService.h"
 #include "security/CommandValidator.h"
 #include "network/WiFiManager.h"
 #include "network/MqttManager.h"
 #include "telemetry/OtaService.h"
+
+/*
+   =========================================================
+   PROJET : MONNAYEUR / DISTRIBUTEUR INTELLIGENT CONNECTÉ
+   CARTE  : ESP32 DOIT DEVKIT V1
+   =========================================================
+*/
 
 using AppConfig::SystemState;
 
@@ -52,8 +60,35 @@ uint32_t lastMachineAvailabilityPublishMs = 0;
 static constexpr uint32_t COIN_EVENT_DUPLICATE_WINDOW_MS = 1000;
 static constexpr uint32_t MACHINE_AVAILABILITY_PERIODIC_PUBLISH_MS = 5000;
 
+// =====================================================
+// PROTOTYPES
+// =====================================================
 void disableCoinInputDuringCreditEmission();
 void enableCoinInputAfterCreditEmission();
+
+const char* systemStateToString(SystemState state);
+void setSystemState(SystemState newState);
+
+bool isDuplicateMqttTransactionId(const char* transactionId);
+void rememberMqttTransactionId(const char* transactionId);
+
+bool isMachineCanAcceptPayment();
+void updateMachineAvailabilityStatus(bool forcePublish = false);
+
+bool isDuplicateCoinPaymentEvent(uint16_t amountFcfa, uint16_t pulseCount);
+void rememberCoinPaymentEvent(uint16_t amountFcfa, uint16_t pulseCount);
+String buildCoinPaymentEventId(uint16_t amountFcfa, uint16_t pulseCount);
+
+// ✅ Détection automatique du type de paiement
+const char* detectPaymentMethod(const char* source);
+
+// ✅ Helper pour libellé lisible
+const char* paymentMethodToLabel(const char* method);
+
+
+// =====================================================
+// HELPERS
+// =====================================================
 
 const char* systemStateToString(SystemState state) {
     switch (state) {
@@ -75,24 +110,54 @@ const char* systemStateToString(SystemState state) {
 
 void setSystemState(SystemState newState) {
     currentState = newState;
+
     Serial.print("[STATE] Nouvel état système : ");
     Serial.println(systemStateToString(currentState));
+
+    remoteLog.info("STATE", systemStateToString(currentState));
 }
 
-bool isDuplicateMqttTransactionId(const char* transactionId);
-void rememberMqttTransactionId(const char* transactionId);
-bool isMachineCanAcceptPayment();
-void updateMachineAvailabilityStatus(bool forcePublish = false);
-bool isDuplicateCoinPaymentEvent(uint16_t amountFcfa, uint16_t pulseCount);
-void rememberCoinPaymentEvent(uint16_t amountFcfa, uint16_t pulseCount);
-String buildCoinPaymentEventId(uint16_t amountFcfa, uint16_t pulseCount);
+// ✅ Détecte le type de paiement depuis la source
+// Retourne : "coin", "wave" ou "orange_money"
+const char* detectPaymentMethod(const char* source) {
+    if (source == nullptr) return "coin";
+
+    // Convertir en minuscules pour comparaison insensible à la casse
+    String s = String(source);
+    s.toLowerCase();
+
+    if (s.indexOf("wave") >= 0) return "wave";
+    if (s.indexOf("orange") >= 0) return "orange_money";
+    if (s.indexOf("om") >= 0) return "orange_money";
+    if (s.indexOf("coin") >= 0) return "coin";
+    if (s.indexOf("physical") >= 0) return "coin";
+
+    // Par défaut
+    return "coin";
+}
+
+// ✅ Libellé lisible pour les logs
+const char* paymentMethodToLabel(const char* method) {
+    if (method == nullptr) return "Inconnu";
+    if (strcmp(method, "coin") == 0) return "PIECE";
+    if (strcmp(method, "wave") == 0) return "WAVE";
+    if (strcmp(method, "orange_money") == 0) return "ORANGE_MONEY";
+    return "INCONNU";
+}
+
+
+// =====================================================
+// INITIALISATION HARDWARE
+// =====================================================
 
 void initHardwarePins() {
     pinMode(AppConfig::Pins::COIN_INPUT_PIN, INPUT_PULLUP);
     pinMode(AppConfig::Pins::LED_STATUS_PIN, OUTPUT);
     pinMode(AppConfig::Pins::PULSE_OUT_PIN, OUTPUT);
+
     digitalWrite(AppConfig::Pins::LED_STATUS_PIN, LOW);
     digitalWrite(AppConfig::Pins::PULSE_OUT_PIN, LOW);
+
     Serial.println("[BOOT] Pins hardware initialisées.");
 }
 
@@ -110,28 +175,40 @@ void printBootInfo() {
 
     Serial.println("----------------------------------------------");
     Serial.println("Topics MQTT dynamiques :");
+
     Serial.print("Commands  : ");
     Serial.println(machineIdentity.topicCommands());
+
     Serial.print("Events    : ");
     Serial.println(machineIdentity.topicEvents());
+
     Serial.print("Telemetry : ");
     Serial.println(machineIdentity.topicTelemetry());
+
     Serial.print("Status    : ");
     Serial.println(machineIdentity.topicStatus());
+
     Serial.print("ACKs      : ");
     Serial.println(machineIdentity.topicAcks());
 
+    Serial.print("Logs      : ");
+    Serial.println(machineIdentity.topicLogs());
+
     Serial.println("----------------------------------------------");
     Serial.println("Configuration hardware :");
+
     Serial.print("Coin input pin   : GPIO ");
     Serial.println(AppConfig::Pins::COIN_INPUT_PIN);
+
     Serial.print("LED status pin   : GPIO ");
     Serial.println(AppConfig::Pins::LED_STATUS_PIN);
+
     Serial.print("Pulse output pin : GPIO ");
     Serial.println(AppConfig::Pins::PULSE_OUT_PIN);
 
     Serial.println("----------------------------------------------");
     Serial.println("Tarifs configurés :");
+
     for (uint8_t i = 0; i < AppConfig::TARIFF_COUNT; i++) {
         Serial.print("- ");
         Serial.print(AppConfig::TARIFFS[i].label);
@@ -149,10 +226,17 @@ void printBootInfo() {
     Serial.println();
 }
 
+
+// =====================================================
+// HEARTBEAT
+// =====================================================
+
 void updateHeartbeat() {
     const uint32_t now = millis();
+
     if (now - lastHeartbeatMs >= AppConfig::Timing::HEARTBEAT_INTERVAL_MS) {
         lastHeartbeatMs = now;
+
         ledState = !ledState;
         digitalWrite(AppConfig::Pins::LED_STATUS_PIN, ledState ? HIGH : LOW);
 
@@ -169,219 +253,32 @@ void updateHeartbeat() {
     }
 }
 
+
+// =====================================================
+// GESTION COIN
+// =====================================================
+
 void enableCoinInputAfterCreditEmission() {
     coinAcceptor.enable();
     coinInputDisabledBySystem = false;
     Serial.println("[MAIN][PROTECTION] Lecture COIN réactivée après émission ESP32.");
 }
 
-void handleSerialPulseTest() {
-    if (!Serial.available()) return;
-
-    String input = Serial.readStringUntil('\n');
-    input.trim();
-    if (input.length() == 0) return;
-
-    if (input.equalsIgnoreCase("clear") || input.equalsIgnoreCase("reset")) {
-        transactionStore.clear();
-        Serial.println("[STORE] Mémoire flash transactionnelle nettoyée !");
-        return;
-    }
-
-    if (input.equalsIgnoreCase("ota")) {
-        Serial.println("[MAIN] Commande OTA manuelle reçue.");
-        otaService.checkAndPerformUpdate();
-        return;
-    }
-
-    // ✅ Afficher l'ID actuel
-    if (input.equalsIgnoreCase("id")) {
-        Serial.print("[MAIN] ID machine actuel : '");
-        Serial.print(machineIdentity.getId());
-        Serial.println("'");
-        return;
-    }
-
-    // ✅ Changer l'ID localement
-    if (input.startsWith("setid ")) {
-        String newId = input.substring(6);
-        newId.trim();
-
-        if (machineIdentity.setId(newId)) {
-            Serial.println("[MAIN] ✅ ID changé. Redémarrage dans 2 secondes...");
-            delay(2000);
-            ESP.restart();
-        } else {
-            Serial.println("[MAIN] ❌ Échec du changement d'ID.");
-        }
-        return;
-    }
-
-    const AppConfig::Tariff* selectedTariff = nullptr;
-    if (input == "1")      selectedTariff = &AppConfig::TARIFFS[0];
-    else if (input == "2") selectedTariff = &AppConfig::TARIFFS[1];
-    else if (input == "3") selectedTariff = &AppConfig::TARIFFS[2];
-    else {
-        Serial.println("[TEST] Commandes : 1, 2, 3, 'ota', 'clear', 'id', 'setid <nouvel_id>'");
-        return;
-    }
-
-    char transactionId[40];
-    snprintf(transactionId, sizeof(transactionId), "SERIAL-%lu", millis());
-
-    CommandValidator::DispenseCommand command = {
-        "DISPENSE",
-        machineIdentity.getId().c_str(),
-        transactionId,
-        selectedTariff->amountFcfa,
-        "serial_test"
-    };
-
-    CommandValidator::ValidationResult validation;
-    if (!commandValidator.validateDispenseCommand(command, validation)) {
-        telemetryService.publishError(validation.errorCode, validation.message);
-        setSystemState(SystemState::IDLE);
-        return;
-    }
-
-    disableCoinInputDuringCreditEmission();
-    if (transactionManager.startTransaction(
-            selectedTariff->amountFcfa, transactionId, "serial_test")) {
-        setSystemState(SystemState::DISPENSING);
-    } else {
-        enableCoinInputAfterCreditEmission();
-    }
-}
-
-bool mqttPublishAdapter(const char* topic, const char* payload) {
-    return mqttManager.publish(topic, payload);
-}
-
-bool syncPendingTransactionsToMqtt(const char* topic, const char* payload) {
-    return mqttManager.publish(topic, payload);
-}
-
-void handleMqttMessage(const char* topic, const char* payload) {
-    Serial.println("----------------------------------------------");
-    Serial.print("[MAIN] Topic : ");
-    Serial.println(topic);
-    Serial.print("[MAIN] Payload : ");
-    Serial.println(payload);
-    Serial.println("----------------------------------------------");
-
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, payload);
-    if (error) {
-        telemetryService.publishError("INVALID_JSON", "Payload MQTT JSON invalide.");
-        return;
-    }
-
-    const char* action = doc["action"] | "";
-    const char* machineId = doc["machineId"] | "";
-    const char* transactionId = doc["transactionId"] | "";
-    const char* source = doc["source"] | "mqtt";
-    uint16_t amountFcfa = doc["amountFcfa"] | 0;
-
-    // ===== COMMANDES ADMIN =====
-    if (strcmp(action, "OTA_UPDATE") == 0) {
-        Serial.println("[MAIN][MQTT][ADMIN] Commande OTA reçue.");
-        otaService.checkAndPerformUpdate();
-        return;
-    }
-
-    if (strcmp(action, "REBOOT") == 0) {
-        Serial.println("[MAIN][MQTT][ADMIN] Commande REBOOT reçue.");
-        delay(500);
-        ESP.restart();
-        return;
-    }
-
-    // ✅ Changement d'ID à distance
-    if (strcmp(action, "SET_ID") == 0) {
-        const char* newId = doc["newId"] | "";
-        Serial.print("[MAIN][MQTT][ADMIN] Commande SET_ID reçue : '");
-        Serial.print(newId);
-        Serial.println("'");
-
-        if (machineIdentity.setId(String(newId))) {
-            telemetryService.publishError("ID_CHANGED", "Redémarrage imminent.");
-            delay(1000);
-            ESP.restart();
-        } else {
-            telemetryService.publishError("ID_CHANGE_FAILED", "ID invalide.");
-        }
-        return;
-    }
-
-    // ===== DISPENSE =====
-    CommandValidator::DispenseCommand command = {
-        action, machineId, transactionId, amountFcfa, source
-    };
-
-    CommandValidator::ValidationResult validation;
-    if (!commandValidator.validateDispenseCommand(command, validation)) {
-        telemetryService.publishError(validation.errorCode, validation.message);
-        return;
-    }
-
-    if (isDuplicateMqttTransactionId(transactionId)) {
-        telemetryService.publishError("DUPLICATE_MQTT_TRANSACTION",
-                                      "Transaction déjà traitée.");
-        return;
-    }
-
-    const bool machineCanAcceptPayment = isMachineCanAcceptPayment();
-    telemetryService.publishMachineAvailabilityStatus(machineCanAcceptPayment);
-
-    if (!machineCanAcceptPayment) {
-        rememberMqttTransactionId(transactionId);
-        telemetryService.publishError("MACHINE_UNAVAILABLE_COUNTER_LOW",
-                                      "Machine indisponible.");
-        return;
-    }
-
-    rememberMqttTransactionId(transactionId);
-    disableCoinInputDuringCreditEmission();
-
-    if (!transactionManager.startTransaction(amountFcfa, transactionId, source)) {
-        telemetryService.publishError("TRANSACTION_START_FAILED",
-                                      "Impossible de démarrer la transaction.");
-        enableCoinInputAfterCreditEmission();
-        return;
-    }
-
-    setSystemState(SystemState::DISPENSING);
-}
-
-void debugRawCoinInputPeriodic() {
-    if (!AppConfig::Debug::COIN_INPUT_RAW_LOG_ENABLED) return;
-    const uint32_t now = millis();
-    if (now - lastRawDebugMs < AppConfig::Debug::COIN_INPUT_RAW_LOG_INTERVAL_MS) return;
-    lastRawDebugMs = now;
-    const int level = digitalRead(AppConfig::Pins::COIN_INPUT_PIN);
-    Serial.print("[DEBUG][GPIO27] Niveau = ");
-    Serial.println(level == HIGH ? "HIGH" : "LOW");
-}
-
-bool isDuplicateMqttTransactionId(const char* transactionId) {
-    if (transactionId == nullptr) return false;
-    String id = String(transactionId);
-    if (id.length() == 0) return false;
-    return id == lastProcessedMqttTransactionId;
-}
-
-void rememberMqttTransactionId(const char* transactionId) {
-    if (transactionId == nullptr) return;
-    lastProcessedMqttTransactionId = String(transactionId);
-    lastProcessedMqttTransactionMs = millis();
+void disableCoinInputDuringCreditEmission() {
+    coinInputDisabledBySystem = true;
+    coinAcceptor.disable();
+    Serial.println("[MAIN][PROTECTION] Lecture COIN désactivée pendant émission ESP32.");
 }
 
 bool isDuplicateCoinPaymentEvent(uint16_t amountFcfa, uint16_t pulseCount) {
     const uint32_t now = millis();
     if (lastCoinEventMs == 0) return false;
-    return (amountFcfa == lastCoinEventAmount &&
-            pulseCount == lastCoinEventPulses &&
-            (now - lastCoinEventMs) <= COIN_EVENT_DUPLICATE_WINDOW_MS);
+
+    return (
+        amountFcfa == lastCoinEventAmount &&
+        pulseCount == lastCoinEventPulses &&
+        (now - lastCoinEventMs) <= COIN_EVENT_DUPLICATE_WINDOW_MS
+    );
 }
 
 void rememberCoinPaymentEvent(uint16_t amountFcfa, uint16_t pulseCount) {
@@ -401,11 +298,315 @@ String buildCoinPaymentEventId(uint16_t amountFcfa, uint16_t pulseCount) {
     return eventId;
 }
 
-void disableCoinInputDuringCreditEmission() {
-    coinInputDisabledBySystem = true;
-    coinAcceptor.disable();
-    Serial.println("[MAIN][PROTECTION] Lecture COIN désactivée pendant émission ESP32.");
+
+// =====================================================
+// COMMANDES SÉRIE (debug)
+// =====================================================
+
+void handleSerialPulseTest() {
+    if (!Serial.available()) return;
+
+    String input = Serial.readStringUntil('\n');
+    input.trim();
+    if (input.length() == 0) return;
+
+    if (input.equalsIgnoreCase("clear") || input.equalsIgnoreCase("reset")) {
+        transactionStore.clear();
+        Serial.println("[STORE] Mémoire flash transactionnelle nettoyée !");
+        remoteLog.info("STORE", "Memoire flash nettoyee");
+        return;
+    }
+
+    if (input.equalsIgnoreCase("ota")) {
+        Serial.println("[MAIN] Commande OTA manuelle reçue.");
+        remoteLog.info("OTA", "Check manuel demande");
+        otaService.checkAndPerformUpdate();
+        return;
+    }
+
+    if (input.equalsIgnoreCase("id")) {
+        Serial.print("[MAIN] ID machine actuel : '");
+        Serial.print(machineIdentity.getId());
+        Serial.println("'");
+        return;
+    }
+
+    if (input.startsWith("setid ")) {
+        String newId = input.substring(6);
+        newId.trim();
+
+        if (machineIdentity.setId(newId)) {
+            Serial.println("[MAIN] ✅ ID changé. Redémarrage dans 2 secondes...");
+            remoteLog.info("IDENTITY", "ID change, redemarrage");
+            delay(2000);
+            ESP.restart();
+        } else {
+            Serial.println("[MAIN] ❌ Échec du changement d'ID.");
+            remoteLog.error("IDENTITY", "Echec changement ID");
+        }
+        return;
+    }
+
+    // ===== TESTS DE DISTRIBUTION =====
+    const AppConfig::Tariff* selectedTariff = nullptr;
+    const char* testPaymentMethod = nullptr;
+
+    // Commandes :
+    //   1 → 50 FCFA coin
+    //   2 → 100 FCFA coin
+    //   3 → 200 FCFA coin
+    //   w1 → 50 FCFA wave
+    //   w2 → 100 FCFA wave
+    //   o1 → 50 FCFA orange_money
+    //   o2 → 100 FCFA orange_money
+
+    if (input == "1") {
+        selectedTariff = &AppConfig::TARIFFS[0];
+        testPaymentMethod = "coin";
+    }
+    else if (input == "2") {
+        selectedTariff = &AppConfig::TARIFFS[1];
+        testPaymentMethod = "coin";
+    }
+    else if (input == "3") {
+        selectedTariff = &AppConfig::TARIFFS[2];
+        testPaymentMethod = "coin";
+    }
+    else if (input == "w1") {
+        selectedTariff = &AppConfig::TARIFFS[0];
+        testPaymentMethod = "wave";
+    }
+    else if (input == "w2") {
+        selectedTariff = &AppConfig::TARIFFS[1];
+        testPaymentMethod = "wave";
+    }
+    else if (input == "o1") {
+        selectedTariff = &AppConfig::TARIFFS[0];
+        testPaymentMethod = "orange_money";
+    }
+    else if (input == "o2") {
+        selectedTariff = &AppConfig::TARIFFS[1];
+        testPaymentMethod = "orange_money";
+    }
+    else {
+        Serial.println("[TEST] Commandes :");
+        Serial.println("  1, 2, 3      → Test pièce (coin)");
+        Serial.println("  w1, w2       → Test Wave");
+        Serial.println("  o1, o2       → Test Orange Money");
+        Serial.println("  ota          → Forcer check OTA");
+        Serial.println("  id           → Afficher ID machine");
+        Serial.println("  setid <id>   → Changer ID machine");
+        Serial.println("  clear        → Vider mémoire");
+        return;
+    }
+
+    Serial.println("----------------------------------------------");
+    Serial.print("[TEST] Type paiement : ");
+    Serial.println(testPaymentMethod);
+    Serial.print("[TEST] Montant : ");
+    Serial.print(selectedTariff->amountFcfa);
+    Serial.println(" FCFA");
+    Serial.print("[TEST] Impulsions : ");
+    Serial.println(selectedTariff->pulses);
+    Serial.println("----------------------------------------------");
+
+    char transactionId[40];
+    snprintf(transactionId, sizeof(transactionId), "SERIAL-%s-%lu",
+             testPaymentMethod, millis());
+
+    CommandValidator::DispenseCommand command = {
+        "DISPENSE",
+        machineIdentity.getId().c_str(),
+        transactionId,
+        selectedTariff->amountFcfa,
+        testPaymentMethod
+    };
+
+    CommandValidator::ValidationResult validation;
+
+    if (!commandValidator.validateDispenseCommand(command, validation)) {
+        Serial.print("[MAIN][SECURITY] Commande refusée : ");
+        Serial.println(validation.message);
+        remoteLog.warn("SECURITY", validation.message);
+        telemetryService.publishError(validation.errorCode, validation.message);
+        setSystemState(SystemState::IDLE);
+        return;
+    }
+
+    Serial.println("[MAIN][SECURITY] Commande validée.");
+
+    disableCoinInputDuringCreditEmission();
+
+    if (transactionManager.startTransaction(
+            selectedTariff->amountFcfa,
+            transactionId,
+            testPaymentMethod
+        )) {
+        setSystemState(SystemState::DISPENSING);
+    } else {
+        enableCoinInputAfterCreditEmission();
+    }
 }
+
+
+// =====================================================
+// MQTT
+// =====================================================
+
+bool mqttPublishAdapter(const char* topic, const char* payload) {
+    return mqttManager.publish(topic, payload);
+}
+
+bool syncPendingTransactionsToMqtt(const char* topic, const char* payload) {
+    return mqttManager.publish(topic, payload);
+}
+
+bool isDuplicateMqttTransactionId(const char* transactionId) {
+    if (transactionId == nullptr) return false;
+    String id = String(transactionId);
+    if (id.length() == 0) return false;
+    return id == lastProcessedMqttTransactionId;
+}
+
+void rememberMqttTransactionId(const char* transactionId) {
+    if (transactionId == nullptr) return;
+    lastProcessedMqttTransactionId = String(transactionId);
+    lastProcessedMqttTransactionMs = millis();
+}
+
+void handleMqttMessage(const char* topic, const char* payload) {
+    Serial.println("----------------------------------------------");
+    Serial.print("[MAIN] Topic : ");
+    Serial.println(topic);
+    Serial.print("[MAIN] Payload : ");
+    Serial.println(payload);
+    Serial.println("----------------------------------------------");
+
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    if (error) {
+        remoteLog.error("MQTT", "Payload JSON invalide");
+        telemetryService.publishError("INVALID_JSON", "Payload MQTT JSON invalide.");
+        return;
+    }
+
+    const char* action = doc["action"] | "";
+    const char* machineId = doc["machineId"] | "";
+    const char* transactionId = doc["transactionId"] | "";
+    const char* source = doc["source"] | "mqtt";
+    uint16_t amountFcfa = doc["amountFcfa"] | 0;
+
+    // ===== COMMANDES ADMIN =====
+    if (strcmp(action, "OTA_UPDATE") == 0) {
+        Serial.println("[MAIN][MQTT][ADMIN] Commande OTA reçue.");
+        remoteLog.info("OTA", "Commande OTA_UPDATE recue");
+        otaService.checkAndPerformUpdate();
+        return;
+    }
+
+    if (strcmp(action, "REBOOT") == 0) {
+        Serial.println("[MAIN][MQTT][ADMIN] Commande REBOOT reçue.");
+        remoteLog.warn("ADMIN", "Reboot demande a distance");
+        delay(500);
+        ESP.restart();
+        return;
+    }
+
+    if (strcmp(action, "SET_ID") == 0) {
+        const char* newId = doc["newId"] | "";
+        Serial.print("[MAIN][MQTT][ADMIN] Commande SET_ID : '");
+        Serial.print(newId);
+        Serial.println("'");
+        remoteLog.info("IDENTITY", "Changement ID demande");
+
+        if (machineIdentity.setId(String(newId))) {
+            telemetryService.publishError("ID_CHANGED", "Redémarrage imminent.");
+            delay(1000);
+            ESP.restart();
+        } else {
+            remoteLog.error("IDENTITY", "ID invalide");
+            telemetryService.publishError("ID_CHANGE_FAILED", "ID invalide.");
+        }
+        return;
+    }
+
+    // ===== DISPENSE =====
+    CommandValidator::DispenseCommand command = {
+        action,
+        machineId,
+        transactionId,
+        amountFcfa,
+        source
+    };
+
+    CommandValidator::ValidationResult validation;
+
+    if (!commandValidator.validateDispenseCommand(command, validation)) {
+        Serial.println("[MAIN][MQTT][SECURITY] Commande MQTT refusée.");
+        remoteLog.warn("SECURITY", validation.message);
+        telemetryService.publishError(validation.errorCode, validation.message);
+        return;
+    }
+
+    if (isDuplicateMqttTransactionId(transactionId)) {
+        remoteLog.warn("MQTT", "Transaction MQTT dupliquee");
+        telemetryService.publishError(
+            "DUPLICATE_MQTT_TRANSACTION",
+            "Commande MQTT ignorée : transactionId déjà traité."
+        );
+        return;
+    }
+
+    const bool machineCanAcceptPayment = isMachineCanAcceptPayment();
+    telemetryService.publishMachineAvailabilityStatus(machineCanAcceptPayment);
+
+    if (!machineCanAcceptPayment) {
+        rememberMqttTransactionId(transactionId);
+        remoteLog.warn("MQTT", "Machine indisponible (COUNTER LOW)");
+        telemetryService.publishError(
+            "MACHINE_UNAVAILABLE_COUNTER_LOW",
+            "Commande DISPENSE refusée : machine indisponible."
+        );
+        return;
+    }
+
+    rememberMqttTransactionId(transactionId);
+    disableCoinInputDuringCreditEmission();
+
+    if (!transactionManager.startTransaction(amountFcfa, transactionId, source)) {
+        remoteLog.error("TRANSACTION", "Impossible de demarrer");
+        telemetryService.publishError(
+            "TRANSACTION_START_FAILED",
+            "Impossible de démarrer la transaction MQTT."
+        );
+        enableCoinInputAfterCreditEmission();
+        return;
+    }
+
+    setSystemState(SystemState::DISPENSING);
+}
+
+
+// =====================================================
+// DEBUG
+// =====================================================
+
+void debugRawCoinInputPeriodic() {
+    if (!AppConfig::Debug::COIN_INPUT_RAW_LOG_ENABLED) return;
+
+    const uint32_t now = millis();
+    if (now - lastRawDebugMs < AppConfig::Debug::COIN_INPUT_RAW_LOG_INTERVAL_MS) return;
+
+    lastRawDebugMs = now;
+    const int level = digitalRead(AppConfig::Pins::COIN_INPUT_PIN);
+    Serial.print("[DEBUG][GPIO27] Niveau brut = ");
+    Serial.println(level == HIGH ? "HIGH" : "LOW");
+}
+
+
+// =====================================================
+// MACHINE AVAILABILITY
+// =====================================================
 
 bool isMachineCanAcceptPayment() {
     return digitalRead(AppConfig::Pins::MACHINE_AVAILABLE_PIN) == HIGH;
@@ -414,6 +615,7 @@ bool isMachineCanAcceptPayment() {
 void updateMachineAvailabilityStatus(bool forcePublish) {
     const bool machineCanAcceptPayment = isMachineCanAcceptPayment();
     const uint32_t now = millis();
+
     const bool changed = !hasPublishedMachineAvailability || machineCanAcceptPayment != lastPublishedMachineAvailability;
     const bool periodic = now - lastMachineAvailabilityPublishMs >= MACHINE_AVAILABILITY_PERIODIC_PUBLISH_MS;
 
@@ -429,11 +631,17 @@ void updateMachineAvailabilityStatus(bool forcePublish) {
     Serial.println(machineCanAcceptPayment ? "AVAILABLE" : "UNAVAILABLE");
 }
 
+
+// =====================================================
+// SETUP
+// =====================================================
+
 void setup() {
     Serial.begin(115200);
     delay(500);
 
-    // ✅ Initialiser l'identité machine AVANT tout le reste
+    Serial.println("=== BOOT DEMARRAGE ===");
+
     machineIdentity.begin();
 
     printBootInfo();
@@ -464,12 +672,21 @@ void setup() {
     mqttManager.setMessageCallback(handleMqttMessage);
     telemetryService.setPublisher(mqttPublishAdapter);
 
+    remoteLog.begin(mqttPublishAdapter);
+
     telemetryService.publishBoot();
 
     setSystemState(SystemState::IDLE);
 
     Serial.println("[BOOT] Initialisation terminée.");
+
+    remoteLog.info("BOOT", "Firmware demarre");
 }
+
+
+// =====================================================
+// LOOP
+// =====================================================
 
 void loop() {
     wifiManager.update();
@@ -478,7 +695,7 @@ void loop() {
     if (mqttManager.isConnected() && transactionStore.hasPendingSync()) {
         transactionStore.syncPendingTransactions(
             syncPendingTransactionsToMqtt,
-            machineIdentity.topicEvents().c_str()   // ✅ topic dynamique
+            machineIdentity.topicEvents().c_str()
         );
     }
 
@@ -487,9 +704,11 @@ void loop() {
     updateHeartbeat();
     handleSerialPulseTest();
 
-    // ✅ OTA automatique
     otaService.update();
 
+    // =====================================================
+    // MONNAYEUR PHYSIQUE
+    // =====================================================
     if (!coinInputDisabledBySystem) {
         coinAcceptor.update();
 
@@ -507,54 +726,125 @@ void loop() {
                 Serial.print(amount);
                 Serial.println(" FCFA.");
 
+                // ✅ Log très lisible
+                char coinMsg[120];
+                snprintf(coinMsg, sizeof(coinMsg),
+                         "PIECE RECUE - %u FCFA (%u impulsions) - Machine %s",
+                         amount,
+                         pulses,
+                         machineIdentity.getId().c_str());
+                remoteLog.info("COIN_DETECTED", coinMsg);
+
                 if (isDuplicateCoinPaymentEvent(amount, pulses)) {
-                    Serial.println("[MAIN][ANTI-DOUBLON] Paiement déjà publié récemment.");
+                    Serial.println("[MAIN][ANTI-DOUBLON] Paiement physique déjà publié récemment.");
                 } else {
                     String eventId = buildCoinPaymentEventId(amount, pulses);
 
                     const bool published = telemetryService.publishCoinPaymentEvent(
-                        amount, pulses, "physical_coin", eventId.c_str()
+                        amount,
+                        pulses,
+                        "physical_coin",
+                        eventId.c_str()
                     );
 
                     if (published) {
-                        Serial.print("[MAIN] Paiement publié. Event ID : ");
+                        Serial.print("[MAIN] Paiement physique publié. Event ID : ");
                         Serial.println(eventId);
+                        rememberCoinPaymentEvent(amount, pulses);
                     } else {
+                        Serial.print("[MAIN][WARN] Publication MQTT échouée. Event ID : ");
+                        Serial.println(eventId);
+                        remoteLog.warn("COIN", "Publication MQTT echouee, mise en file");
+
                         transactionStore.enqueueOfflineTransaction(
-                            eventId.c_str(), amount, "physical_coin",
-                            TransactionStore::Status::CREATED, pulses
+                            eventId.c_str(),
+                            amount,
+                            "physical_coin",
+                            TransactionStore::Status::CREATED,
+                            pulses
                         );
                     }
                 }
+
                 setSystemState(SystemState::IDLE);
             }
+
             Serial.println("----------------------------------------------");
         }
     }
 
+    // =====================================================
+    // TRANSACTION MANAGER
+    // =====================================================
     transactionManager.update();
 
+    // ===== TRANSACTION RÉUSSIE =====
     if (transactionManager.hasSucceeded()) {
+        const char* source = transactionManager.getLastCompletedSource();
+        const char* paymentMethod = detectPaymentMethod(source);
+        const char* label = paymentMethodToLabel(paymentMethod);
+
+        // ✅ Log très lisible
+        char txMsg[180];
+        snprintf(txMsg, sizeof(txMsg),
+                 "PAIEMENT %s REUSSI - %u FCFA - Machine %s - Tx %s",
+                 label,
+                 transactionManager.getLastCompletedAmountFcfa(),
+                 machineIdentity.getId().c_str(),
+                 transactionManager.getLastCompletedTransactionId());
+        remoteLog.info("PAYMENT_OK", txMsg);
+
+        // ✅ Événement transaction complet
         telemetryService.publishTransactionEvent(
             "transaction_success",
             transactionManager.getLastCompletedTransactionId(),
             transactionManager.getLastCompletedAmountFcfa(),
-            transactionManager.getLastCompletedSource(),
-            "SUCCESS"
+            source,
+            "SUCCESS",
+            paymentMethod
         );
+
+        // ✅ Événement de paiement dédié (facile à filtrer dans Grafana)
+        telemetryService.publishPaymentEvent(
+            paymentMethod,
+            transactionManager.getLastCompletedAmountFcfa(),
+            transactionManager.getLastCompletedTransactionId(),
+            "SUCCESS",
+            source
+        );
+
         enableCoinInputAfterCreditEmission();
         setSystemState(AppConfig::SystemState::IDLE);
+        Serial.println("[MAIN] Transaction confirmée par TransactionManager.");
     }
 
+    // ===== TRANSACTION ÉCHOUÉE =====
     if (transactionManager.hasFailed()) {
+        const char* source = transactionManager.getCurrentSource();
+        const char* paymentMethod = detectPaymentMethod(source);
+        const char* label = paymentMethodToLabel(paymentMethod);
+
+        // ✅ Log très lisible
+        char txMsg[180];
+        snprintf(txMsg, sizeof(txMsg),
+                 "PAIEMENT %s ECHOUE - %u FCFA - Machine %s - Tx %s",
+                 label,
+                 transactionManager.getCurrentAmountFcfa(),
+                 machineIdentity.getId().c_str(),
+                 transactionManager.getCurrentTransactionId());
+        remoteLog.error("PAYMENT_FAIL", txMsg);
+
         telemetryService.publishTransactionEvent(
             "transaction_failed",
             transactionManager.getCurrentTransactionId(),
             transactionManager.getCurrentAmountFcfa(),
-            transactionManager.getCurrentSource(),
-            "FAILED"
+            source,
+            "FAILED",
+            paymentMethod
         );
+
         enableCoinInputAfterCreditEmission();
         setSystemState(SystemState::IDLE);
+        Serial.println("[MAIN][WARN] Transaction échouée.");
     }
 }

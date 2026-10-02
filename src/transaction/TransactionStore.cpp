@@ -156,13 +156,13 @@ bool TransactionStore::syncPendingTransactions(
             : AppConfig::Money::amountToPulseCount(record.amountFcfa);
 
         JsonDocument doc;
-        // Format identique au direct, 100% compatible avec le backend
         doc["type"] = "coin_payment_detected";
         doc["eventType"] = "physical_coin_payment";
-        //doc["machineId"] = AppConfig::Machine::ID;
         doc["machineId"] = machineIdentity.getId();
         doc["amountFcfa"] = record.amountFcfa;
+        doc["amount"] = record.amountFcfa;               // ✅ AJOUT
         doc["pulseCount"] = pulses;
+        doc["paymentMethod"] = "coin";                    // ✅ AJOUT
         doc["source"] = "physical_coin";
         doc["status"] = "DETECTED";
         doc["eventId"] = record.transactionId;
@@ -173,7 +173,6 @@ bool TransactionStore::syncPendingTransactions(
         doc["updatedAtMs"] = record.updatedAtMs;
         doc["syncCount"] = record.syncCount;
         doc["macAddress"] = WiFi.macAddress();
-
         char payload[AppConfig::Limits::TELEMETRY_JSON_SIZE];
         const size_t length = serializeJson(doc, payload, sizeof(payload));
 

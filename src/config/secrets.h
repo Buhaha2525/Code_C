@@ -5,9 +5,9 @@
 namespace AppSecrets {
 
     namespace WiFiConfig {
-        //static constexpr const char* SSID = "4G UFI-6A77";
-        static constexpr const char* SSID = "Test";
-        static constexpr const char* PASSWORD = "12345678";
+        //static constexpr const char* SSID= "4G UFI-6A77";
+        static constexpr const char* SSID = "Diagne famillly ";
+        static constexpr const char* PASSWORD = "Diagne2006";
     }
 
     namespace MqttConfig {
