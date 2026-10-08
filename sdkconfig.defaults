@@ -1,0 +1,69 @@
+# =====================================================
+# CONFIGURATION DE BASE
+# =====================================================
+CONFIG_IDF_TARGET="esp32"
+CONFIG_ESP32_DEFAULT_CPU_FREQ_240=y
+CONFIG_ESP32_XTAL_FREQ_AUTO=y
+
+# =====================================================
+# FLASH
+# =====================================================
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# =====================================================
+# PARTITION TABLE
+# =====================================================
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# =====================================================
+# SECURE BOOT V2
+# =====================================================
+CONFIG_SECURE_BOOT=y
+CONFIG_SECURE_BOOT_V2_ENABLED=y
+CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=n
+CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y
+CONFIG_SECURE_BOOT_SIGNING_KEY="/Users/mac/secure_boot_keys/secure_boot_signing_key.pem"
+CONFIG_SECURE_BOOT_VERIFICATION_KEY=""
+
+# Anti-rollback
+CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK=y
+CONFIG_BOOTLOADER_APP_SECURE_VERSION=1
+
+# Désactiver le fallback non sécurisé
+CONFIG_SECURE_BOOT_ALLOW_JTAG=n
+CONFIG_SECURE_BOOT_ALLOW_ROM_BASIC=n
+CONFIG_SECURE_BOOT_ALLOW_SHORT_APP_PARTITION=n
+
+# Flash Encryption (optionnel mais recommandé)
+CONFIG_SECURE_FLASH_ENC_ENABLED=y
+CONFIG_SECURE_FLASH_ENC_MODE_DEVELOPMENT=y
+
+# =====================================================
+# DÉSACTIVER ROM DOWNLOAD MODE (sécurité finale)
+# =====================================================
+# ⚠️ À décommenter SEULEMENT à la fin
+# CONFIG_SECURE_BOOT_DISABLE_ROM_DL_MODE=y
+# CONFIG_SECURE_BOOT_DISABLE_JTAG=y
+
+# =====================================================
+# LOGS SÉRIE (indispensable pour debug)
+# =====================================================
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# =====================================================
+# OPTIMISATION
+# =====================================================
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+
+# =====================================================
+# OTA
+# =====================================================
+CONFIG_OTA_ALLOW_HTTP=y
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y

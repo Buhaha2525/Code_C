@@ -22,4 +22,8 @@ namespace AppSecrets {
     namespace Certificates {
         static constexpr const char* ROOT_CA = "";
     }
+    // ✅ NOUVEAU : Protection admin Serial
+    namespace AdminConfig {
+        static constexpr const char* SERIAL_PASSWORD = "Test1234";
+    }
 }

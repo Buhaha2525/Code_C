@@ -3,7 +3,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
-
 #include "config/config.h"
 #include "config/secrets.h"
 #include "config/MachineIdentity.h"
@@ -79,11 +78,10 @@ bool isDuplicateCoinPaymentEvent(uint16_t amountFcfa, uint16_t pulseCount);
 void rememberCoinPaymentEvent(uint16_t amountFcfa, uint16_t pulseCount);
 String buildCoinPaymentEventId(uint16_t amountFcfa, uint16_t pulseCount);
 
-// ✅ Détection automatique du type de paiement
 const char* detectPaymentMethod(const char* source);
-
-// ✅ Helper pour libellé lisible
 const char* paymentMethodToLabel(const char* method);
+
+void printSecurityInfo();
 
 
 // =====================================================
@@ -117,12 +115,9 @@ void setSystemState(SystemState newState) {
     remoteLog.info("STATE", systemStateToString(currentState));
 }
 
-// ✅ Détecte le type de paiement depuis la source
-// Retourne : "coin", "wave" ou "orange_money"
 const char* detectPaymentMethod(const char* source) {
     if (source == nullptr) return "coin";
 
-    // Convertir en minuscules pour comparaison insensible à la casse
     String s = String(source);
     s.toLowerCase();
 
@@ -132,17 +127,49 @@ const char* detectPaymentMethod(const char* source) {
     if (s.indexOf("coin") >= 0) return "coin";
     if (s.indexOf("physical") >= 0) return "coin";
 
-    // Par défaut
     return "coin";
 }
 
-// ✅ Libellé lisible pour les logs
 const char* paymentMethodToLabel(const char* method) {
     if (method == nullptr) return "Inconnu";
     if (strcmp(method, "coin") == 0) return "PIECE";
     if (strcmp(method, "wave") == 0) return "WAVE";
     if (strcmp(method, "orange_money") == 0) return "ORANGE_MONEY";
     return "INCONNU";
+}
+
+
+// =====================================================
+// SECURITY INFO (nouvelle fonction utilitaire)
+// =====================================================
+
+void printSecurityInfo() {
+    Serial.println("==============================================");
+    Serial.println("  ÉTAT DE SÉCURITÉ");
+    Serial.println("==============================================");
+
+#ifdef CONFIG_SECURE_BOOT
+    Serial.println("Secure Boot       : ✅ ACTIF");
+#else
+    Serial.println("Secure Boot       : ❌ INACTIF");
+#endif
+
+#ifdef CONFIG_SECURE_FLASH_ENC_ENABLED
+    Serial.println("Flash Encryption  : ✅ ACTIF");
+#else
+    Serial.println("Flash Encryption  : ❌ INACTIF");
+#endif
+
+#ifdef CONFIG_SECURE_BOOT_V2_ENABLED
+    Serial.println("Secure Boot V2    : ✅ ACTIF");
+#else
+    Serial.println("Secure Boot V2    : ❌ INACTIF");
+#endif
+
+    Serial.print("Firmware version  : ");
+    Serial.println(AppConfig::Machine::FIRMWARE_VERSION);
+
+    Serial.println("==============================================");
 }
 
 
@@ -206,6 +233,9 @@ void printBootInfo() {
     Serial.print("Pulse output pin : GPIO ");
     Serial.println(AppConfig::Pins::PULSE_OUT_PIN);
 
+    Serial.print("Machine avail pin: GPIO ");
+    Serial.println(AppConfig::Pins::MACHINE_AVAILABLE_PIN);
+
     Serial.println("----------------------------------------------");
     Serial.println("Tarifs configurés :");
 
@@ -222,7 +252,9 @@ void printBootInfo() {
     Serial.println(WiFi.macAddress());
     Serial.print("ESP MAC (SoftAP) : ");
     Serial.println(WiFi.softAPmacAddress());
-    Serial.println("==============================================");
+
+    printSecurityInfo();
+
     Serial.println();
 }
 
@@ -249,7 +281,14 @@ void updateHeartbeat() {
         telemetryService.publishMachineAvailabilityStatus(machineCanAcceptPayment);
 
         Serial.print("[MACHINE][COUNTER] Disponibilité machine : ");
-        Serial.println(machineCanAcceptPayment ? "AVAILABLE" : "UNAVAILABLE");
+        Serial.print(machineCanAcceptPayment ? "AVAILABLE" : "UNAVAILABLE");
+
+        const int rawPin = digitalRead(AppConfig::Pins::MACHINE_AVAILABLE_PIN);
+        Serial.print(" (GPIO");
+        Serial.print(AppConfig::Pins::MACHINE_AVAILABLE_PIN);
+        Serial.print(" = ");
+        Serial.print(rawPin == HIGH ? "HIGH" : "LOW");
+        Serial.println(")");
     }
 }
 
@@ -303,6 +342,23 @@ String buildCoinPaymentEventId(uint16_t amountFcfa, uint16_t pulseCount) {
 // COMMANDES SÉRIE (debug)
 // =====================================================
 
+void printSerialHelp() {
+    Serial.println("[TEST] Commandes disponibles :");
+    Serial.println("----------------------------------------------");
+    Serial.println("  DISTRIBUTION :");
+    Serial.println("    1, 2, 3        → Test pièce (coin) 50/100/200 FCFA");
+    Serial.println("    w1, w2         → Test Wave 50/100 FCFA");
+    Serial.println("    o1, o2         → Test Orange Money 50/100 FCFA");
+    Serial.println("----------------------------------------------");
+    Serial.println("  ADMIN :");
+    Serial.println("    id                          → Afficher ID machine");
+    Serial.println("    setid <pwd> <id>            → Changer ID (protégé)");
+    Serial.println("    info                        → Infos système + sécurité");
+    Serial.println("    ota                         → Forcer check OTA");
+    Serial.println("    clear                       → Vider mémoire transactionnelle");
+    Serial.println("----------------------------------------------");
+}
+
 void handleSerialPulseTest() {
     if (!Serial.available()) return;
 
@@ -310,6 +366,9 @@ void handleSerialPulseTest() {
     input.trim();
     if (input.length() == 0) return;
 
+    // =====================================================
+    // COMMANDE : clear / reset
+    // =====================================================
     if (input.equalsIgnoreCase("clear") || input.equalsIgnoreCase("reset")) {
         transactionStore.clear();
         Serial.println("[STORE] Mémoire flash transactionnelle nettoyée !");
@@ -317,6 +376,9 @@ void handleSerialPulseTest() {
         return;
     }
 
+    // =====================================================
+    // COMMANDE : ota
+    // =====================================================
     if (input.equalsIgnoreCase("ota")) {
         Serial.println("[MAIN] Commande OTA manuelle reçue.");
         remoteLog.info("OTA", "Check manuel demande");
@@ -324,6 +386,9 @@ void handleSerialPulseTest() {
         return;
     }
 
+    // =====================================================
+    // COMMANDE : id
+    // =====================================================
     if (input.equalsIgnoreCase("id")) {
         Serial.print("[MAIN] ID machine actuel : '");
         Serial.print(machineIdentity.getId());
@@ -331,9 +396,28 @@ void handleSerialPulseTest() {
         return;
     }
 
+    // =====================================================
+    // COMMANDE : setid <password> <newId>
+    // =====================================================
     if (input.startsWith("setid ")) {
-        String newId = input.substring(6);
+        int firstSpace = input.indexOf(' ');
+        int secondSpace = input.indexOf(' ', firstSpace + 1);
+
+        if (secondSpace < 0) {
+            Serial.println("[MAIN] ❌ Usage: setid <password> <newId>");
+            Serial.println("[MAIN] Exemple: setid MonMotDePasse 00042");
+            return;
+        }
+
+        String password = input.substring(firstSpace + 1, secondSpace);
+        String newId = input.substring(secondSpace + 1);
         newId.trim();
+
+        if (password != AppSecrets::AdminConfig::SERIAL_PASSWORD) {
+            Serial.println("[MAIN] ❌ Mot de passe invalide.");
+            remoteLog.error("SECURITY", "Tentative setid echouee (mauvais mot de passe)");
+            return;
+        }
 
         if (machineIdentity.setId(newId)) {
             Serial.println("[MAIN] ✅ ID changé. Redémarrage dans 2 secondes...");
@@ -347,29 +431,53 @@ void handleSerialPulseTest() {
         return;
     }
 
-    // ===== TESTS DE DISTRIBUTION =====
+    // =====================================================
+    // COMMANDE : info
+    // =====================================================
+    if (input.equalsIgnoreCase("info")) {
+        Serial.println("==============================================");
+        Serial.println("  INFORMATIONS SYSTÈME");
+        Serial.println("==============================================");
+        Serial.print("Machine ID       : ");
+        Serial.println(machineIdentity.getId());
+        Serial.print("Firmware version : ");
+        Serial.println(AppConfig::Machine::FIRMWARE_VERSION);
+        Serial.print("Uptime           : ");
+        Serial.print(millis() / 1000);
+        Serial.println(" s");
+        Serial.print("Free heap        : ");
+        Serial.println(ESP.getFreeHeap());
+        Serial.print("MAC STA          : ");
+        Serial.println(WiFi.macAddress());
+        Serial.print("MAC SoftAP       : ");
+        Serial.println(WiFi.softAPmacAddress());
+        Serial.print("WiFi status      : ");
+        Serial.println(WiFi.status());
+        Serial.print("MQTT connected   : ");
+        Serial.println(mqttManager.isConnected() ? "YES" : "NO");
+        Serial.print("System state     : ");
+        Serial.println(systemStateToString(currentState));
+
+        printSecurityInfo();
+        return;
+    }
+
+    // =====================================================
+    // COMMANDES DE TEST DISTRIBUTION
+    // =====================================================
     const AppConfig::Tariff* selectedTariff = nullptr;
     const char* testPaymentMethod = nullptr;
 
-    // Commandes :
-    //   1 → 50 FCFA coin
-    //   2 → 100 FCFA coin
-    //   3 → 200 FCFA coin
-    //   w1 → 50 FCFA wave
-    //   w2 → 100 FCFA wave
-    //   o1 → 50 FCFA orange_money
-    //   o2 → 100 FCFA orange_money
-
     if (input == "1") {
-        selectedTariff = &AppConfig::TARIFFS[0];
+        selectedTariff = &AppConfig::TARIFFS[0];  // 50 FCFA
         testPaymentMethod = "coin";
     }
     else if (input == "2") {
-        selectedTariff = &AppConfig::TARIFFS[1];
+        selectedTariff = &AppConfig::TARIFFS[1];  // 100 FCFA
         testPaymentMethod = "coin";
     }
     else if (input == "3") {
-        selectedTariff = &AppConfig::TARIFFS[2];
+        selectedTariff = &AppConfig::TARIFFS[2];  // 200 FCFA
         testPaymentMethod = "coin";
     }
     else if (input == "w1") {
@@ -389,14 +497,7 @@ void handleSerialPulseTest() {
         testPaymentMethod = "orange_money";
     }
     else {
-        Serial.println("[TEST] Commandes :");
-        Serial.println("  1, 2, 3      → Test pièce (coin)");
-        Serial.println("  w1, w2       → Test Wave");
-        Serial.println("  o1, o2       → Test Orange Money");
-        Serial.println("  ota          → Forcer check OTA");
-        Serial.println("  id           → Afficher ID machine");
-        Serial.println("  setid <id>   → Changer ID machine");
-        Serial.println("  clear        → Vider mémoire");
+        printSerialHelp();
         return;
     }
 
@@ -496,7 +597,9 @@ void handleMqttMessage(const char* topic, const char* payload) {
     const char* source = doc["source"] | "mqtt";
     uint16_t amountFcfa = doc["amountFcfa"] | 0;
 
-    // ===== COMMANDES ADMIN =====
+    // =====================================================
+    // COMMANDES ADMIN
+    // =====================================================
     if (strcmp(action, "OTA_UPDATE") == 0) {
         Serial.println("[MAIN][MQTT][ADMIN] Commande OTA reçue.");
         remoteLog.info("OTA", "Commande OTA_UPDATE recue");
@@ -514,9 +617,20 @@ void handleMqttMessage(const char* topic, const char* payload) {
 
     if (strcmp(action, "SET_ID") == 0) {
         const char* newId = doc["newId"] | "";
+        const char* mqttPassword = doc["password"] | "";
+
         Serial.print("[MAIN][MQTT][ADMIN] Commande SET_ID : '");
         Serial.print(newId);
         Serial.println("'");
+
+        // ✅ Vérification du mot de passe admin
+        if (strcmp(mqttPassword, AppSecrets::AdminConfig::SERIAL_PASSWORD) != 0) {
+            Serial.println("[MAIN][MQTT][SECURITY] ❌ Mot de passe admin invalide.");
+            remoteLog.error("SECURITY", "Tentative SET_ID echouee (mauvais mot de passe)");
+            telemetryService.publishError("INVALID_ADMIN_PASSWORD", "Mot de passe admin invalide.");
+            return;
+        }
+
         remoteLog.info("IDENTITY", "Changement ID demande");
 
         if (machineIdentity.setId(String(newId))) {
@@ -530,7 +644,9 @@ void handleMqttMessage(const char* topic, const char* payload) {
         return;
     }
 
-    // ===== DISPENSE =====
+    // =====================================================
+    // DISPENSE
+    // =====================================================
     CommandValidator::DispenseCommand command = {
         action,
         machineId,
@@ -599,7 +715,9 @@ void debugRawCoinInputPeriodic() {
 
     lastRawDebugMs = now;
     const int level = digitalRead(AppConfig::Pins::COIN_INPUT_PIN);
-    Serial.print("[DEBUG][GPIO27] Niveau brut = ");
+    Serial.print("[DEBUG][GPIO");
+    Serial.print(AppConfig::Pins::COIN_INPUT_PIN);
+    Serial.print("] Niveau brut = ");
     Serial.println(level == HIGH ? "HIGH" : "LOW");
 }
 
@@ -616,8 +734,10 @@ void updateMachineAvailabilityStatus(bool forcePublish) {
     const bool machineCanAcceptPayment = isMachineCanAcceptPayment();
     const uint32_t now = millis();
 
-    const bool changed = !hasPublishedMachineAvailability || machineCanAcceptPayment != lastPublishedMachineAvailability;
-    const bool periodic = now - lastMachineAvailabilityPublishMs >= MACHINE_AVAILABILITY_PERIODIC_PUBLISH_MS;
+    const bool changed = !hasPublishedMachineAvailability
+                      || machineCanAcceptPayment != lastPublishedMachineAvailability;
+    const bool periodic = now - lastMachineAvailabilityPublishMs
+                       >= MACHINE_AVAILABILITY_PERIODIC_PUBLISH_MS;
 
     if (!forcePublish && !changed && !periodic) return;
 
@@ -628,7 +748,14 @@ void updateMachineAvailabilityStatus(bool forcePublish) {
     lastMachineAvailabilityPublishMs = now;
 
     Serial.print("[MACHINE][COUNTER] Status publié : ");
-    Serial.println(machineCanAcceptPayment ? "AVAILABLE" : "UNAVAILABLE");
+    Serial.print(machineCanAcceptPayment ? "AVAILABLE" : "UNAVAILABLE");
+
+    const int rawPin = digitalRead(AppConfig::Pins::MACHINE_AVAILABLE_PIN);
+    Serial.print(" (GPIO");
+    Serial.print(AppConfig::Pins::MACHINE_AVAILABLE_PIN);
+    Serial.print(" = ");
+    Serial.print(rawPin == HIGH ? "HIGH" : "LOW");
+    Serial.println(")");
 }
 
 
@@ -726,7 +853,6 @@ void loop() {
                 Serial.print(amount);
                 Serial.println(" FCFA.");
 
-                // ✅ Log très lisible
                 char coinMsg[120];
                 snprintf(coinMsg, sizeof(coinMsg),
                          "PIECE RECUE - %u FCFA (%u impulsions) - Machine %s",
@@ -784,7 +910,6 @@ void loop() {
         const char* paymentMethod = detectPaymentMethod(source);
         const char* label = paymentMethodToLabel(paymentMethod);
 
-        // ✅ Log très lisible
         char txMsg[180];
         snprintf(txMsg, sizeof(txMsg),
                  "PAIEMENT %s REUSSI - %u FCFA - Machine %s - Tx %s",
@@ -794,7 +919,6 @@ void loop() {
                  transactionManager.getLastCompletedTransactionId());
         remoteLog.info("PAYMENT_OK", txMsg);
 
-        // ✅ Événement transaction complet
         telemetryService.publishTransactionEvent(
             "transaction_success",
             transactionManager.getLastCompletedTransactionId(),
@@ -804,7 +928,6 @@ void loop() {
             paymentMethod
         );
 
-        // ✅ Événement de paiement dédié (facile à filtrer dans Grafana)
         telemetryService.publishPaymentEvent(
             paymentMethod,
             transactionManager.getLastCompletedAmountFcfa(),
@@ -824,7 +947,6 @@ void loop() {
         const char* paymentMethod = detectPaymentMethod(source);
         const char* label = paymentMethodToLabel(paymentMethod);
 
-        // ✅ Log très lisible
         char txMsg[180];
         snprintf(txMsg, sizeof(txMsg),
                  "PAIEMENT %s ECHOUE - %u FCFA - Machine %s - Tx %s",
