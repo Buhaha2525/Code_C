@@ -9,6 +9,7 @@
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
 #include "config/config.h"
+#include "telemetry/LogService.h"     // ✅ AJOUT pour remoteLog
 
 class OtaService {
 public:
@@ -16,52 +17,45 @@ public:
 
     // =====================================================
     // À APPELER DANS loop() À CHAQUE ITÉRATION
-    // Gère automatiquement :
-    //  - le délai initial après boot
-    //  - la périodicité des checks
-    //  - la lecture de version.txt
-    //  - la construction de l'URL du binaire
-    //  - la comparaison version locale / distante
-    //  - le flash + reboot si nécessaire
     // =====================================================
     void update() {
         if (WiFi.status() != WL_CONNECTED) return;
 
         const uint32_t now = millis();
 
-        // Délai initial après boot
         if (!initialDelayElapsed) {
             if (now < AppConfig::Ota::INITIAL_DELAY_MS) return;
             initialDelayElapsed = true;
             lastCheckMs = now - AppConfig::Ota::CHECK_INTERVAL_MS;
         }
 
-        // Périodicité
         if (now - lastCheckMs < AppConfig::Ota::CHECK_INTERVAL_MS) return;
 
         lastCheckMs = now;
 
         Serial.println();
         Serial.println("[OTA][AUTO] ⏰ Check automatique déclenché.");
+
         checkAndPerformUpdate();
     }
 
     // =====================================================
-    // Check + flash (peut être appelé manuellement aussi)
+    // Check + flash
     // =====================================================
     void checkAndPerformUpdate() {
         Serial.println("[OTA] ========== DEBUT CHECK OTA ==========");
+        remoteLog.info("OTA", "Check OTA demarre");                    // ✅ AJOUT
 
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("[OTA] ❌ Wi-Fi non connecté.");
+            remoteLog.warn("OTA", "Wi-Fi non connecte");              // ✅ AJOUT
             return;
         }
 
-        // --- ÉTAPE 1 : lire version.txt ---
         String latestVersion = fetchRemoteVersion();
         if (latestVersion.length() == 0) {
             Serial.println("[OTA] ❌ Impossible de lire version.txt");
-            Serial.println("[OTA] ========== FIN CHECK OTA ==========");
+            remoteLog.error("OTA", "Lecture version.txt echouee");    // ✅ AJOUT
             return;
         }
 
@@ -72,28 +66,33 @@ public:
         Serial.print(latestVersion);
         Serial.println("'");
 
-        // --- ÉTAPE 2 : comparer ---
         if (latestVersion == AppConfig::Machine::FIRMWARE_VERSION) {
             Serial.println("[OTA] ✅ Déjà à jour. Rien à faire.");
-            Serial.println("[OTA] ========== FIN CHECK OTA ==========");
+            // ⚠️ Pas de log distant ici : trop fréquent (toutes les 2 min)
             return;
         }
 
         Serial.println("[OTA] 🚀 Nouvelle version détectée → flash...");
 
-        // --- ÉTAPE 3 : construire l'URL du binaire ---
+        // ✅ Log distant IMPORTANT : nouvelle version détectée
+        char msg[100];
+        snprintf(msg, sizeof(msg),
+                 "Nouvelle version %s detectee (locale %s)",
+                 latestVersion.c_str(),
+                 AppConfig::Machine::FIRMWARE_VERSION);
+        remoteLog.info("OTA", msg);
+
         String binaryUrl = buildBinaryUrl(latestVersion);
         Serial.print("[OTA] URL binaire : ");
         Serial.println(binaryUrl);
 
-        // --- ÉTAPE 4 : flasher ---
+        remoteLog.info("OTA", binaryUrl.c_str());                     // ✅ AJOUT
+
         performUpdate(binaryUrl);
 
         Serial.println("[OTA] ========== FIN CHECK OTA ==========");
     }
 
-    // Construit l'URL : BASE + "v{VERSION}/firmware_{VERSION}.bin"
-    // Ex: https://github.com/Buhaha2525/OTA_bin/releases/download/v0.3.0/firmware_0.3.0.bin
     String buildBinaryUrl(const String& version) {
         String url = AppConfig::Machine::OTA_BINARY_BASE_URL;
         url += "v";
@@ -108,9 +107,6 @@ private:
     bool     initialDelayElapsed = false;
     uint32_t lastCheckMs         = 0;
 
-    // =====================================================
-    // Récupère la version depuis version.txt
-    // =====================================================
     String fetchRemoteVersion() {
         WiFiClientSecure client;
         client.setInsecure();
@@ -118,7 +114,6 @@ private:
 
         HTTPClient http;
         if (!http.begin(client, AppConfig::Machine::OTA_VERSION_URL)) {
-            Serial.println("[OTA] ❌ http.begin versionUrl échoué.");
             return "";
         }
 
@@ -137,28 +132,22 @@ private:
         String latestVersion = http.getString();
         http.end();
 
-        // --- Nettoyage agressif ---
         latestVersion.trim();
 
-        // 1ère ligne uniquement (protection multi-lignes)
         int nl = latestVersion.indexOf('\n');
         if (nl >= 0) {
-            Serial.println("[OTA] ⚠️ Multi-lignes détecté, troncature.");
             latestVersion = latestVersion.substring(0, nl);
             latestVersion.trim();
         }
 
-        // BOM UTF-8
         if (latestVersion.length() >= 3
             && (uint8_t)latestVersion[0] == 0xEF
             && (uint8_t)latestVersion[1] == 0xBB
             && (uint8_t)latestVersion[2] == 0xBF) {
-            Serial.println("[OTA] ⚠️ BOM UTF-8 détecté, suppression.");
             latestVersion.remove(0, 3);
             latestVersion.trim();
         }
 
-        // ASCII imprimable uniquement
         String cleaned;
         for (size_t i = 0; i < latestVersion.length(); i++) {
             char c = latestVersion[i];
@@ -167,29 +156,14 @@ private:
         latestVersion = cleaned;
         latestVersion.trim();
 
-        // --- Validations ---
-        if (latestVersion.length() == 0) {
-            Serial.println("[OTA] ❌ version.txt vide.");
-            return "";
-        }
-
-        if (latestVersion.length() >= 15) {
-            Serial.println("[OTA] ❌ version.txt trop long (HTML ?).");
-            return "";
-        }
-
-        if (latestVersion.indexOf('<') >= 0 ||
-            latestVersion.indexOf("DOCTYPE") >= 0) {
-            Serial.println("[OTA] ❌ HTML détecté dans version.txt.");
-            return "";
-        }
+        if (latestVersion.length() == 0) return "";
+        if (latestVersion.length() >= 15) return "";
+        if (latestVersion.indexOf('<') >= 0) return "";
+        if (latestVersion.indexOf("DOCTYPE") >= 0) return "";
 
         return latestVersion;
     }
 
-    // =====================================================
-    // Télécharge et flashe le binaire
-    // =====================================================
     void performUpdate(const String& binaryUrl) {
         WiFiClientSecure updateClient;
         updateClient.setInsecure();
@@ -197,6 +171,7 @@ private:
 
         httpUpdate.onStart([]() {
             Serial.println("[OTA] Début du téléversement...");
+            remoteLog.info("OTA", "Telechargement demarre");          // ✅ AJOUT
         });
 
         httpUpdate.onEnd([]() {
@@ -224,18 +199,29 @@ private:
 
         Serial.println();
         switch (ret) {
-            case HTTP_UPDATE_FAILED:
+            case HTTP_UPDATE_FAILED: {
                 Serial.printf("[OTA] ❌ FAILED (err %d): %s\n",
                               httpUpdate.getLastError(),
                               httpUpdate.getLastErrorString().c_str());
+
+                // ✅ Log distant de l'échec
+                char errMsg[140];
+                snprintf(errMsg, sizeof(errMsg),
+                         "Flash echoue (err %d): %s",
+                         httpUpdate.getLastError(),
+                         httpUpdate.getLastErrorString().c_str());
+                remoteLog.error("OTA", errMsg);
                 break;
+            }
 
             case HTTP_UPDATE_NO_UPDATES:
                 Serial.println("[OTA] ℹ️ NO_UPDATES");
+                remoteLog.info("OTA", "Aucune mise a jour");          // ✅ AJOUT
                 break;
 
             case HTTP_UPDATE_OK:
                 Serial.println("[OTA] ✅ OK → redémarrage imminent...");
+                remoteLog.info("OTA", "Flash OK, redemarrage");       // ✅ AJOUT
                 break;
         }
     }

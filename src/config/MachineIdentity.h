@@ -78,7 +78,7 @@ public:
     String topicTelemetry() const { return String("machines/") + _machineId + "/telemetry"; }
     String topicStatus() const    { return String("machines/") + _machineId + "/status"; }
     String topicAcks() const      { return String("machines/") + _machineId + "/acks"; }
-
+    String topicLogs() const      { return String("machines/") + _machineId + "/logs"; }  // ✅ AJOUT
 private:
     static constexpr const char* DEFAULT_ID = "00001";
     Preferences _preferences;

@@ -172,7 +172,7 @@ void updateHeartbeat() {
 void enableCoinInputAfterCreditEmission() {
     coinAcceptor.enable();
     coinInputDisabledBySystem = false;
-    Serial.println("[MAIN][PROTECTION] Lecture COIN réactivée.");
+    Serial.println("[MAIN][PROTECTION] Lecture COIN réactivée après émission ESP32.");
 }
 
 void handleSerialPulseTest() {
@@ -404,28 +404,11 @@ String buildCoinPaymentEventId(uint16_t amountFcfa, uint16_t pulseCount) {
 void disableCoinInputDuringCreditEmission() {
     coinInputDisabledBySystem = true;
     coinAcceptor.disable();
-    Serial.println("[MAIN][PROTECTION] Lecture COIN désactivée.");
+    Serial.println("[MAIN][PROTECTION] Lecture COIN désactivée pendant émission ESP32.");
 }
 
 bool isMachineCanAcceptPayment() {
-    static int lastPinState = HIGH;
-    static int debouncedState = HIGH;
-    static uint32_t lastDebounceTimeMs = 0;
-    static constexpr uint32_t DEBOUNCE_DELAY_MS = 100;
-
-    const int reading = digitalRead(AppConfig::Pins::MACHINE_AVAILABLE_PIN);
-    const uint32_t now = millis();
-
-    if (reading != lastPinState) {
-        lastDebounceTimeMs = now;
-        lastPinState = reading;
-    }
-
-    if ((now - lastDebounceTimeMs) >= DEBOUNCE_DELAY_MS) {
-        debouncedState = reading;
-    }
-
-    return debouncedState == HIGH;
+    return digitalRead(AppConfig::Pins::MACHINE_AVAILABLE_PIN) == HIGH;
 }
 
 void updateMachineAvailabilityStatus(bool forcePublish) {
@@ -507,14 +490,6 @@ void loop() {
     // ✅ OTA automatique
     otaService.update();
 
-    // 💧 Protection eau : désactivation du pin 27 pendant le puisage ou l'émission
-    const bool machineBusyOrDispensing = !isMachineCanAcceptPayment() || transactionManager.isBusy();
-    if (machineBusyOrDispensing && !coinInputDisabledBySystem) {
-        disableCoinInputDuringCreditEmission();
-    } else if (!machineBusyOrDispensing && coinInputDisabledBySystem && !transactionManager.isBusy()) {
-        enableCoinInputAfterCreditEmission();
-    }
-
     if (!coinInputDisabledBySystem) {
         coinAcceptor.update();
 
@@ -567,9 +542,7 @@ void loop() {
             transactionManager.getLastCompletedSource(),
             "SUCCESS"
         );
-        if (isMachineCanAcceptPayment()) {
-            enableCoinInputAfterCreditEmission();
-        }
+        enableCoinInputAfterCreditEmission();
         setSystemState(AppConfig::SystemState::IDLE);
     }
 
@@ -581,9 +554,7 @@ void loop() {
             transactionManager.getCurrentSource(),
             "FAILED"
         );
-        if (isMachineCanAcceptPayment()) {
-            enableCoinInputAfterCreditEmission();
-        }
+        enableCoinInputAfterCreditEmission();
         setSystemState(SystemState::IDLE);
     }
 }
