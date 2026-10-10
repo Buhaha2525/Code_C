@@ -102,11 +102,32 @@ void printBootInfo() {
     Serial.println("   MONNAYEUR / DISTRIBUTEUR INTELLIGENT ESP32 ");
     Serial.println("==============================================");
 
+    // ✅ Afficher le groupe
+#if defined(GROUP_BISRIO)
+    Serial.println("GROUPE          : BISRIO");
+#elif defined(GROUP_OXEWEUL)
+    Serial.println("GROUPE          : OXEWEUL");
+#else
+    Serial.println("GROUPE          : INCONNU ⚠️");
+#endif
+
     Serial.print("Machine ID       : ");
     Serial.println(machineIdentity.getId());
 
     Serial.print("Firmware version : ");
     Serial.println(AppConfig::Machine::FIRMWARE_VERSION);
+
+    Serial.print("OTA Version URL  : ");
+    Serial.println(AppConfig::Machine::OTA_VERSION_URL);
+
+    Serial.print("OTA Binary Base  : ");
+    Serial.println(AppConfig::Machine::OTA_BINARY_BASE_URL);
+
+    Serial.print("WiFi SSID        : ");
+    Serial.println(AppSecrets::WiFiConfig::SSID);
+
+    Serial.print("MQTT Host        : ");
+    Serial.println(AppSecrets::MqttConfig::HOST);
 
     Serial.println("----------------------------------------------");
     Serial.println("Topics MQTT dynamiques :");

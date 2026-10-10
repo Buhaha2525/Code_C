@@ -12,16 +12,33 @@ namespace AppConfig {
        =====================================================
        IDENTITÉ MACHINE (version + OTA)
        =====================================================
-       ⚠️ L'ID machine est maintenant dynamique (voir MachineIdentity.h)
     */
     namespace Machine {
         static constexpr const char* FIRMWARE_VERSION = "0.0.4";
 
-        const String OTA_VERSION_URL =
-            "https://raw.githubusercontent.com/Buhaha2525/OTA_bin/main/version.txt";
+        // =====================================================
+        // ✅ OTA DIFFÉRENCIÉ PAR GROUPE
+        // =====================================================
+        #if defined(GROUP_BISRIO)
+            // Groupe 1 : BISRIO
+            const String OTA_VERSION_URL =
+                "https://raw.githubusercontent.com/Buhaha2525/OTA_bin/main/version.txt";
 
-        const String OTA_BINARY_BASE_URL =
-            "https://github.com/Buhaha2525/OTA_bin/releases/download/";
+            const String OTA_BINARY_BASE_URL =
+                "https://github.com/Buhaha2525/OTA_bin/releases/download/";
+
+        #elif defined(GROUP_OXEWEUL)
+            // Groupe 2 : CLIENT2 (adapte le repo)
+            const String OTA_VERSION_URL =
+                "https://raw.githubusercontent.com/Buhaha2525/OTA_oxeweul/main/version.txt";
+
+            const String OTA_BINARY_BASE_URL =
+                "https://github.com/Buhaha2525/OTA_oxeweul/releases/download/";
+
+        #else
+            #error "Aucun groupe défini. Utilise -DGROUP_BISRIO ou -DGROUP_OXEWEUL";
+        #endif
+
     }
 
     /*
@@ -75,10 +92,8 @@ namespace AppConfig {
 
     namespace Money {
         static constexpr uint16_t PULSE_VALUE_FCFA = 50;
-
         static constexpr uint16_t MIN_AMOUNT_FCFA = 50;
         static constexpr uint16_t MAX_AMOUNT_FCFA = 5700;
-
         static constexpr uint8_t MAX_OUTPUT_PULSES =
             MAX_AMOUNT_FCFA / PULSE_VALUE_FCFA;
 
@@ -101,11 +116,6 @@ namespace AppConfig {
         }
     }
 
-    /*
-       =====================================================
-       TIMING / DÉLAIS
-       =====================================================
-    */
     namespace Timing {
         static constexpr uint32_t COIN_DEBOUNCE_US = 50000;
         static constexpr uint32_t COIN_END_TIMEOUT_MS = 1000;
@@ -116,11 +126,6 @@ namespace AppConfig {
         static constexpr uint16_t MQTT_RETRY_DELAY_MS = 5000;
     }
 
-    /*
-       =====================================================
-       LIMITES SYSTÈME
-       =====================================================
-    */
     namespace Limits {
         static constexpr uint16_t MQTT_PAYLOAD_MAX_SIZE = 1024;
         static constexpr uint16_t TELEMETRY_JSON_SIZE   = 512;
@@ -129,11 +134,6 @@ namespace AppConfig {
         static constexpr uint8_t MAX_OUTPUT_PULSES = Money::MAX_OUTPUT_PULSES;
     }
 
-    /*
-       =====================================================
-       ÉTATS SYSTÈME
-       =====================================================
-    */
     enum class SystemState {
         BOOT,
         WIFI_CONNECTING,

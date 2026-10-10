@@ -205,7 +205,12 @@ bool TelemetryService::publishError(const char* errorCode, const char* message) 
 // =====================================================
 bool TelemetryService::publishJson(const char* topic, JsonDocument& doc) {
     doc["macAddress"] = WiFi.macAddress();
-
+    // ✅ Ajouter le groupe
+    #if defined(GROUP_BISRIO)
+        doc["group"] = "bisrio";
+#elif defined(GROUP_CLIENT2)
+    doc["group"] = "client2";
+#endif
     char payload[AppConfig::Limits::TELEMETRY_JSON_SIZE];
     const size_t length = serializeJson(doc, payload, sizeof(payload));
 
