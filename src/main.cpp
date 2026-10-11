@@ -14,6 +14,7 @@
 #include "transaction/TransactionStore.h"
 #include "telemetry/TelemetryService.h"
 #include "security/CommandValidator.h"
+#include "security/SerialGuard.h"          // ✅ AJOUT
 #include "network/WiFiManager.h"
 #include "network/MqttManager.h"
 #include "telemetry/OtaService.h"
@@ -102,13 +103,12 @@ void printBootInfo() {
     Serial.println("   MONNAYEUR / DISTRIBUTEUR INTELLIGENT ESP32 ");
     Serial.println("==============================================");
 
-    // ✅ Afficher le groupe
 #if defined(GROUP_BISRIO)
     Serial.println("GROUPE          : BISRIO");
 #elif defined(GROUP_OXEWEUL)
     Serial.println("GROUPE          : OXEWEUL");
 #else
-    Serial.println("GROUPE          : INCONNU ⚠️");
+    Serial.println("GROUPE          : INCONNU");
 #endif
 
     Serial.print("Machine ID       : ");
@@ -215,7 +215,6 @@ void handleSerialPulseTest() {
         return;
     }
 
-    // ✅ Afficher l'ID actuel
     if (input.equalsIgnoreCase("id")) {
         Serial.print("[MAIN] ID machine actuel : '");
         Serial.print(machineIdentity.getId());
@@ -223,18 +222,39 @@ void handleSerialPulseTest() {
         return;
     }
 
-    // ✅ Changer l'ID localement
     if (input.startsWith("setid ")) {
         String newId = input.substring(6);
         newId.trim();
 
         if (machineIdentity.setId(newId)) {
-            Serial.println("[MAIN] ✅ ID changé. Redémarrage dans 2 secondes...");
+            Serial.println("[MAIN] ID changé. Redémarrage dans 2 secondes...");
             delay(2000);
             ESP.restart();
         } else {
-            Serial.println("[MAIN] ❌ Échec du changement d'ID.");
+            Serial.println("[MAIN] Échec du changement d'ID.");
         }
+        return;
+    }
+
+    // ✅ Changer le mot de passe : passwd <ancien> <nouveau>
+    if (input.startsWith("passwd ")) {
+        String args = input.substring(7);
+        int spaceIdx = args.indexOf(' ');
+
+        if (spaceIdx > 0) {
+            String oldPwd = args.substring(0, spaceIdx);
+            String newPwd = args.substring(spaceIdx + 1);
+            serialGuard.changePassword(oldPwd, newPwd);
+        } else {
+            Serial.println("[MAIN] Usage: passwd <ancien> <nouveau>");
+        }
+        return;
+    }
+
+    // ✅ Reverrouiller la session
+    if (input.equalsIgnoreCase("lock")) {
+        Serial.println("[MAIN] Session verrouillée.");
+        serialGuard.lock();
         return;
     }
 
@@ -243,7 +263,7 @@ void handleSerialPulseTest() {
     else if (input == "2") selectedTariff = &AppConfig::TARIFFS[1];
     else if (input == "3") selectedTariff = &AppConfig::TARIFFS[2];
     else {
-        Serial.println("[TEST] Commandes : 1, 2, 3, 'ota', 'clear', 'id', 'setid <nouvel_id>'");
+        Serial.println("[TEST] Commandes : 1, 2, 3, 'ota', 'clear', 'id', 'setid <id>', 'passwd <ancien> <nouveau>', 'lock'");
         return;
     }
 
@@ -317,7 +337,6 @@ void handleMqttMessage(const char* topic, const char* payload) {
         return;
     }
 
-    // ✅ Changement d'ID à distance
     if (strcmp(action, "SET_ID") == 0) {
         const char* newId = doc["newId"] | "";
         Serial.print("[MAIN][MQTT][ADMIN] Commande SET_ID reçue : '");
@@ -454,7 +473,30 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
-    // ✅ Initialiser l'identité machine AVANT tout le reste
+    // =====================================================
+    // PROTECTION SERIAL - DEMANDE DU MOT DE PASSE
+    // =====================================================
+    serialGuard.begin();
+
+    if (serialGuard.isEnabled()) {
+        Serial.println("[BOOT] En attente d'authentification...");
+
+        const uint32_t startWait = millis();
+        while (!serialGuard.isAuthenticated() && millis() - startWait < 60000) {
+            serialGuard.update();
+            delay(50);
+        }
+
+        if (!serialGuard.isAuthenticated()) {
+            Serial.println("[BOOT] Non authentifié - démarrage silencieux.");
+        } else {
+            Serial.println("[BOOT] Utilisateur authentifié.");
+        }
+    }
+
+    // =====================================================
+    // INITIALISATION NORMALE
+    // =====================================================
     machineIdentity.begin();
 
     printBootInfo();
@@ -493,13 +535,31 @@ void setup() {
 }
 
 void loop() {
+    // =====================================================
+    // TRAITER LA SAISIE DU MOT DE PASSE
+    // =====================================================
+    serialGuard.update();
+
+    // Si la protection est active et l'utilisateur non authentifié :
+    // continuer les tâches critiques MAIS sans aucun log Serial
+    if (serialGuard.isEnabled() && !serialGuard.isAuthenticated()) {
+        wifiManager.update();
+        mqttManager.update();
+        transactionManager.update();
+        otaService.update();
+        return;
+    }
+
+    // =====================================================
+    // BOUCLE NORMALE (utilisateur authentifié)
+    // =====================================================
     wifiManager.update();
     mqttManager.update();
 
     if (mqttManager.isConnected() && transactionStore.hasPendingSync()) {
         transactionStore.syncPendingTransactions(
             syncPendingTransactionsToMqtt,
-            machineIdentity.topicEvents().c_str()   // ✅ topic dynamique
+            machineIdentity.topicEvents().c_str()
         );
     }
 
@@ -508,7 +568,6 @@ void loop() {
     updateHeartbeat();
     handleSerialPulseTest();
 
-    // ✅ OTA automatique
     otaService.update();
 
     if (!coinInputDisabledBySystem) {
